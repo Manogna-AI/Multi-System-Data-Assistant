@@ -33,7 +33,13 @@ from app.utils.validators import (
 )
 
 # ── FastMCP Server Instance (mounted by gateway.py) ──────────────
-mcp = FastMCP("observability-server")
+
+def create_mcp_server():
+    if FastMCP is None:
+        raise RuntimeError("FastMCP not installed")
+    return FastMCP("observability-server")
+
+mcp = create_mcp_server()
 
 
 @mcp.tool()

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 from typing import Optional
-
+import re
 from app.config import get_settings
 from app.schemas.chat import ChatQueryRequest, ChatQueryResponse
 from app.schemas.common import ToolTraceItem
@@ -31,6 +31,26 @@ logger = logging.getLogger(__name__)
 # The Runner holds the root agent and session service.
 
 _adk_service: Optional[AdkRunnerService] = None
+
+def _finalize_answer(text: str) -> str:
+    """Final UI-facing cleanup for agent responses."""
+    if not text:
+        return "No response from agent."
+
+    unwanted_patterns = [
+        r"(?im)^we can provide answer:.*$",
+        r"(?im)^now format.*$",
+        r"(?im)^analysis:.*$",
+        r"(?im)^observation:.*$",
+        r"(?im)^let me .*?$",
+        r"(?im)^i will .*?$",
+        r"(?im)^thus .*?$",
+    ]
+
+    for pattern in unwanted_patterns:
+        text = re.sub(pattern, "", text).strip()
+
+    return text.strip() or "No response from agent."
 
 
 def _get_adk_service() -> AdkRunnerService:
@@ -97,7 +117,7 @@ class ChatService:
             ]
 
             # ── Build Response ────────────────────────────────
-            answer = result.response or "No response from agent."
+            answer = _finalize_answer(result.response)
 
             logger.info(
                 "Chat response: agent=%s, tools=%d, answer_len=%d",

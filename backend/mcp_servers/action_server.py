@@ -28,8 +28,14 @@ from app.utils.validators import (
     validate_service_name,
 )
 
+
+def create_mcp_server():
+    if FastMCP is None:
+        raise RuntimeError("FastMCP not installed")
+    return FastMCP("action-server")
+
 # ── FastMCP Server Instance (mounted by gateway.py) ──────────────
-mcp = FastMCP("action-server")
+mcp = create_mcp_server()
 
 
 def _reject(action_type: str, parameters: dict, reason: str) -> dict:

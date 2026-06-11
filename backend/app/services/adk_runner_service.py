@@ -46,26 +46,49 @@ class QueryResult:
 
 
 def _clean_response(text: str) -> str:
-    """Strip thinking tokens and reasoning prefixes from LLM output."""
+    """Remove reasoning leakage and keep only clean user-facing content."""
     if not text:
         return ""
 
-    # Remove <think>...</think> blocks (reasoning models)
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
 
-    # Find where markdown content starts (skip reasoning preamble)
-    lines = text.split("\n")
-    start_idx = 0
-    for i, line in enumerate(lines):
-        s = line.strip()
-        if s.startswith(("#", "|", "**", "- ", "1.", "2.", "3.")):
-            start_idx = i
-            break
+    unwanted_patterns = [
+        r"(?im)^we can provide answer:.*$",
+        r"(?im)^we need to .*?$",
+        r"(?im)^the user didn't .*?$",
+        r"(?im)^according to tool usage rules.*$",
+        r"(?im)^we don't have a tool.*$",
+        r"(?im)^now format.*$",
+        r"(?im)^analysis:.*$",
+        r"(?im)^observation:.*$",
+        r"(?im)^let me .*?$",
+        r"(?im)^i will .*?$",
+        r"(?im)^thus .*?$",
+    ]
 
-    if start_idx > 0:
-        cleaned = "\n".join(lines[start_idx:]).strip()
-        if len(cleaned) > 50:
-            return cleaned
+    for pattern in unwanted_patterns:
+        text = re.sub(pattern, "", text).strip()
+
+    lines = [line.rstrip() for line in text.splitlines()]
+    cleaned_lines = []
+    previous_blank = False
+
+    for line in lines:
+        is_blank = not line.strip()
+        if is_blank and previous_blank:
+            continue
+        cleaned_lines.append(line)
+        previous_blank = is_blank
+
+    text = "\n".join(cleaned_lines).strip()
+
+    lower_text = text.lower()
+
+    if ("please provide" in lower_text or "please specify" in lower_text) and not text.startswith("##"):
+        return f"## Clarification Needed\n\n{text}"
+
+    if "i don't have the required tools" in lower_text and not text.startswith("##"):
+        return f"## Tool Limitation\n\n{text}"
 
     return text
 
@@ -144,8 +167,12 @@ class AdkRunnerService:
                             )
 
             if hasattr(event, "is_final_response") and event.is_final_response():
-                if event.content and event.content.parts and event.content.parts[0].text:
-                    response_text = event.content.parts[0].text
+                if event.content and event.content.parts:
+                    text_parts = []
+                    for part in event.content.parts:
+                        if getattr(part, "text", None):
+                            text_parts.append(part.text)
+                    response_text = "\n".join(text_parts).strip()
 
         response_text = _clean_response(response_text)
 

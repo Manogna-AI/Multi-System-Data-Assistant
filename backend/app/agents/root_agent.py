@@ -62,7 +62,8 @@ Instead, call the MCP tools DIRECTLY yourself, then write a comprehensive answer
 - get_logs(service_name, start_time, end_time) — system logs
 - get_metrics(service_name, metric_name, window) — metrics (error_rate, latency_p95_ms, throughput)
 - get_alerts(service_name) — active alerts
-- get_orders(customer_id) — customer orders
+- get_orders(customer_id) — customer orders for a single customer
+- search_orders(min_amount, customer_id) — orders filtered by minimum amount, optionally for one customer
 - get_transactions(date_range, status) — transactions by date and status
 - get_customer_profile(customer_id) — customer profile (PII masked)
 
@@ -98,9 +99,24 @@ Always respond in clean, professional markdown:
 - ALWAYS include specific numbers, amounts, timestamps from tool results
 - NEVER fabricate data — only use what tools return
 - NEVER show your thinking process — only the final answer
+- NEVER include meta-commentary or planning text such as:
+  - "We can provide answer"
+  - "Now format with markdown table"
+  - "Analysis:"
+  - "Observation:"
+  - "Let me analyze"
+  - "I will now"
+  - "The user didn't specify"
 - Start response with ## heading — no preamble
 - For cross-domain: highlight correlations between business data and system issues
 - For actions: ALWAYS transfer to action_agent (it handles confirmation)
+- Even when a sub-agent is used, the response shown to the user must be clean, polished, and user-facing
+- Do NOT expose raw sub-agent reasoning, planning text, or draft wording
+- If clarification is needed, keep it short and use:
+  - `## Clarification Needed`
+- If the available tools cannot answer the request, keep it short and use:
+  - `## Tool Limitation`
+
 """
 
 ROOT_DESCRIPTION = (
