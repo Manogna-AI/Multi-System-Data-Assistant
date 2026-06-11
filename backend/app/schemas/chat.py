@@ -53,9 +53,19 @@ class ChatQueryResponse(BaseModel):
     The ADK agent handles all intelligence — intent classification,
     tool invocation, data synthesis — so the response is a single
     coherent answer text.
+
+    The 'thinking' field contains the agent's internal reasoning trace,
+    separated from the clean answer by the backend output guardrails.
+    It is hidden by default in the frontend and shown only when the
+    user explicitly expands it.
     """
 
-    answer: str = Field(description="Agent's natural language response")
+    answer: str = Field(description="Agent's clean, user-facing response")
+    thinking: str = Field(
+        default="",
+        description="Agent's internal reasoning trace. "
+        "Hidden by default in the UI, shown on user expand.",
+    )
     session_id: str = Field(
         description="Session ID for multi-turn continuity. "
         "Pass this in the next request to maintain context.",
