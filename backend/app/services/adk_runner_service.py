@@ -5,12 +5,15 @@ Architecture:
   ChatService → AdkRunnerService → Runner(root_agent)
     → Single-domain: root transfers to sub-agent
     → Cross-domain: root calls tools directly and synthesizes
+
+Output guardrails are applied after the ADK pipeline produces a raw
+response. The guardrails separate thinking from the clean answer,
+redact PII, and standardize short responses.
 """
 
 from __future__ import annotations
 
 import logging
-import re
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
@@ -21,6 +24,7 @@ from google.genai import types
 
 from app.agents.root_agent import root_agent
 from app.config import Settings, get_settings
+from app.utils.guardrails import apply_output_guardrails
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +32,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ToolCall:
     """Represents a single MCP tool invocation extracted from ADK events."""
+
     agent_name: str = ""
     tool_name: str = ""
     arguments: dict = field(default_factory=dict)
@@ -36,61 +41,25 @@ class ToolCall:
 
 @dataclass
 class QueryResult:
-    """Structured result from an agent query execution."""
+    """Structured result from an agent query execution.
+
+    Attributes:
+        response: Clean, user-facing answer (reasoning removed).
+        thinking: Agent's internal reasoning trace (for collapsible UI).
+        session_id: ADK session identifier for multi-turn continuity.
+        agent_name: Name of the agent that produced the final response.
+        tool_calls: List of MCP tool invocations made during execution.
+        events_count: Number of ADK events processed.
+        intent: Detected intent category (if applicable).
+    """
+
     response: str = ""
+    thinking: str = ""
     session_id: str = ""
     agent_name: str = ""
     tool_calls: list[ToolCall] = field(default_factory=list)
     events_count: int = 0
     intent: str = ""
-
-
-def _clean_response(text: str) -> str:
-    """Remove reasoning leakage and keep only clean user-facing content."""
-    if not text:
-        return ""
-
-    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
-
-    unwanted_patterns = [
-        r"(?im)^we can provide answer:.*$",
-        r"(?im)^we need to .*?$",
-        r"(?im)^the user didn't .*?$",
-        r"(?im)^according to tool usage rules.*$",
-        r"(?im)^we don't have a tool.*$",
-        r"(?im)^now format.*$",
-        r"(?im)^analysis:.*$",
-        r"(?im)^observation:.*$",
-        r"(?im)^let me .*?$",
-        r"(?im)^i will .*?$",
-        r"(?im)^thus .*?$",
-    ]
-
-    for pattern in unwanted_patterns:
-        text = re.sub(pattern, "", text).strip()
-
-    lines = [line.rstrip() for line in text.splitlines()]
-    cleaned_lines = []
-    previous_blank = False
-
-    for line in lines:
-        is_blank = not line.strip()
-        if is_blank and previous_blank:
-            continue
-        cleaned_lines.append(line)
-        previous_blank = is_blank
-
-    text = "\n".join(cleaned_lines).strip()
-
-    lower_text = text.lower()
-
-    if ("please provide" in lower_text or "please specify" in lower_text) and not text.startswith("##"):
-        return f"## Clarification Needed\n\n{text}"
-
-    if "i don't have the required tools" in lower_text and not text.startswith("##"):
-        return f"## Tool Limitation\n\n{text}"
-
-    return text
 
 
 class AdkRunnerService:
@@ -112,9 +81,19 @@ class AdkRunnerService:
     async def query(
         self, user_id: str, message: str, session_id: str | None = None
     ) -> QueryResult:
-        """Execute a user query through the ADK agent pipeline."""
+        """Execute a user query through the ADK agent pipeline.
 
-        # Session management
+        Args:
+            user_id: Unique user identifier for session scoping.
+            message: Cleaned user query (already passed input guardrails).
+            session_id: Optional session ID for multi-turn continuity.
+
+        Returns:
+            QueryResult with clean response, thinking trace, tool calls,
+            and session metadata.
+        """
+
+        # ── Session management ────────────────────────────────
         sid = session_id or str(uuid.uuid4())
         try:
             session = await self._session_service.get_session(
@@ -129,7 +108,7 @@ class AdkRunnerService:
             )
             logger.info("Created session: %s", sid)
 
-        # Run agent pipeline
+        # ── Run agent pipeline ────────────────────────────────
         user_content = types.Content(
             role="user", parts=[types.Part.from_text(text=message)]
         )
@@ -145,11 +124,14 @@ class AdkRunnerService:
         ):
             events_count += 1
 
+            # Track which agent is currently active
             if hasattr(event, "author") and event.author:
                 agent_name = event.author
 
+            # Extract tool calls and tool responses from event parts
             if hasattr(event, "content") and event.content and event.content.parts:
                 for part in event.content.parts:
+                    # Tool call (agent → MCP tool)
                     if hasattr(part, "function_call") and part.function_call:
                         fc = part.function_call
                         current_tool = ToolCall(
@@ -159,6 +141,7 @@ class AdkRunnerService:
                         )
                         tool_calls.append(current_tool)
 
+                    # Tool response (MCP tool → agent)
                     if hasattr(part, "function_response") and part.function_response:
                         fr = part.function_response
                         if current_tool and current_tool.tool_name == fr.name:
@@ -166,6 +149,7 @@ class AdkRunnerService:
                                 dict(fr.response) if fr.response else None
                             )
 
+            # Capture the final response text from all text parts
             if hasattr(event, "is_final_response") and event.is_final_response():
                 if event.content and event.content.parts:
                     text_parts = []
@@ -174,15 +158,22 @@ class AdkRunnerService:
                             text_parts.append(part.text)
                     response_text = "\n".join(text_parts).strip()
 
-        response_text = _clean_response(response_text)
+        # ── Output guardrails ─────────────────────────────────
+        # Separate thinking from clean answer, redact PII,
+        # standardize short responses, ensure safe fallback.
+        guardrail_result = apply_output_guardrails(response_text)
 
         logger.info(
-            "Query complete: agent=%s, tools=%d, response=%d chars",
-            agent_name, len(tool_calls), len(response_text),
+            "Query complete: agent=%s, tools=%d, answer=%d chars, thinking=%d chars",
+            agent_name,
+            len(tool_calls),
+            len(guardrail_result.answer),
+            len(guardrail_result.thinking),
         )
 
         return QueryResult(
-            response=response_text,
+            response=guardrail_result.answer,
+            thinking=guardrail_result.thinking,
             session_id=sid,
             agent_name=agent_name,
             tool_calls=tool_calls,
